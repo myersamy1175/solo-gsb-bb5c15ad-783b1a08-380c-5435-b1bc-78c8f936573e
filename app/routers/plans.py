@@ -1,14 +1,22 @@
-"""方案保存、步骤推演与 JSON 导出。"""
+"""方案保存、步骤推演、CSV 导入与 JSON 导出。"""
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from .. import models, safety, versioning
+from .. import importer, models, safety, versioning
 from ..database import get_db
 from ..deduce import _step_categories, build_report, persist_run
-from ..schemas import PlanCreate, PlanOut, PlanUpdate, StepOut, StepSafetyUpdate
+from ..schemas import (
+    ImportCommitIn,
+    ImportPreviewIn,
+    PlanCreate,
+    PlanOut,
+    PlanUpdate,
+    StepOut,
+    StepSafetyUpdate,
+)
 
 router = APIRouter(prefix="/api/plans", tags=["plans"])
 
@@ -123,6 +131,35 @@ def create_plan(plan_in: PlanCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(plan)
     return _plan_out(db, plan)
+
+
+@router.post("/import/preview")
+def import_preview(payload: ImportPreviewIn, db: Session = Depends(get_db)):
+    """CSV 导入预览：解析 + 逐行校验 + 试剂匹配，不落库。
+
+    返回每行解析结果（含行号）、行级 / 文件级错误，以及试剂匹配情况
+    （复用档案试剂 / 临时试剂）。任何行错误都不会阻止预览返回，
+    便于前端一次性展示全部问题。
+    """
+    return importer.build_preview(db, payload.csv_text)
+
+
+@router.post("/import", status_code=201)
+def import_commit(payload: ImportCommitIn, db: Session = Depends(get_db)):
+    """CSV 导入提交：单事务创建方案与全部步骤。
+
+    任何行校验失败（序号重复、缺试剂名 / 类别、数值非法）→ 422 整体拒绝，
+    返回行号与原因，不产生半成品；存在未建档试剂且未确认 → 409。
+    导入步骤的安全确认一律为"待确认"，正式推演门槛保持不变。
+    """
+    plan, summary = importer.commit_import(
+        db,
+        name=payload.name,
+        description=payload.description,
+        csv_text=payload.csv_text,
+        allow_unknown_reagents=payload.allow_unknown_reagents,
+    )
+    return {"plan": _plan_out(db, plan), "import_summary": summary}
 
 
 @router.get("/{plan_id}", response_model=PlanOut)

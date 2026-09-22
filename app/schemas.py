@@ -138,6 +138,23 @@ class PlanOut(PlanBase):
     safety_summary: Optional[dict] = None  # 步骤安全确认摘要（见 safety.plan_safety_summary）
 
 
+# ---------- 方案导入（CSV） ----------
+
+class ImportPreviewIn(BaseModel):
+    """CSV 预览校验请求：仅解析与校验，不落库。"""
+
+    csv_text: str = Field(min_length=1, max_length=512 * 1024)
+
+
+class ImportCommitIn(BaseModel):
+    """CSV 导入提交：单事务创建方案与步骤；未知试剂需显式确认。"""
+
+    name: str = Field(min_length=1, max_length=128)
+    description: Optional[str] = None
+    csv_text: str = Field(min_length=1, max_length=512 * 1024)
+    allow_unknown_reagents: bool = False
+
+
 # ---------- 规则 ----------
 
 class RuleCreate(BaseModel):

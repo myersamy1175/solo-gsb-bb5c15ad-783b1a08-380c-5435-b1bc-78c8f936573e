@@ -565,5 +565,106 @@ call("DELETE", f"/api/plans/{spid}")
 call("DELETE", f"/api/plans/{spx['id']}")
 call("DELETE", f"/api/reagents/{rid}")
 
+# ---------- 11. 方案导入（CSV 预览校验 + 单事务提交 + 门槛保留） ----------
+print("【场景11】方案导入（CSV 预览、整体拒绝、临时试剂确认）")
+CSV_OK = (
+    "步骤序号,试剂名,类别,时刻,用量,备注\n"
+    "1,盐酸,strong_acid,0,20,缓慢滴加\n"
+    "2,新试剂X,new_cat; reducer,5,10,临时试剂\n"
+    "3,氯化钠,halide_salt,10,5,\n"
+)
+
+# 预览：逐行校验 + 试剂匹配，不落库
+plans_before = len(call("GET", "/api/plans")[1])
+s, p = call("POST", "/api/plans/import/preview", {"csv_text": CSV_OK})
+check("预览 200 且校验通过", s == 200 and p["ok"] is True, (s, p.get("file_errors")))
+check("预览统计 3 行全部有效", p["summary"]["total_rows"] == 3
+      and p["summary"]["valid_rows"] == 3 and p["summary"]["invalid_rows"] == 0)
+check("已知试剂按名称识别", p["summary"]["known_reagents"] == ["盐酸", "氯化钠"],
+      p["summary"])
+check("未知试剂标记为临时试剂", p["summary"]["unknown_reagents"] == ["新试剂X"]
+      and p["rows"][1]["temporary"] is True and p["rows"][1]["reagent_id"] is None)
+check("类别列分号分隔解析", p["rows"][1]["categories"] == ["new_cat", "reducer"],
+      p["rows"][1])
+check("档案试剂带出档案类别", p["rows"][0]["reagent_id"] is not None
+      and "strong_acid" in p["rows"][0]["archive_categories"], p["rows"][0])
+check("预览不落库", len(call("GET", "/api/plans")[1]) == plans_before)
+
+# 未确认临时试剂 → 409
+s, e = call("POST", "/api/plans/import", {"name": "测试-导入", "csv_text": CSV_OK})
+check("未知试剂未确认 409", s == 409 and "新试剂X" in e["detail"]["message"]
+      and e["detail"]["unknown_reagents"] == ["新试剂X"], (s, e))
+check("409 同样不落库", len(call("GET", "/api/plans")[1]) == plans_before)
+
+# 确认后提交 → 201，单事务创建
+s, res = call("POST", "/api/plans/import",
+              {"name": "测试-导入", "description": "e2e 导入", "csv_text": CSV_OK,
+               "allow_unknown_reagents": True})
+check("导入成功 201", s == 201, (s, res))
+imp_plan = res["plan"]
+impid = imp_plan["id"]
+check("导入返回方案与摘要", len(imp_plan["steps"]) == 3
+      and res["import_summary"]["total_steps"] == 3
+      and res["import_summary"]["temporary_reagents"] == ["新试剂X"], res.get("import_summary"))
+hcl = next(x for x in imp_plan["steps"] if x["reagent_name"] == "盐酸")
+check("已存在试剂按名称复用", hcl["reagent_id"] is not None
+      and "strong_acid" in hcl["categories"], hcl)
+tmp = next(x for x in imp_plan["steps"] if x["reagent_name"] == "新试剂X")
+check("未知试剂写为临时试剂", tmp["reagent_id"] is None
+      and tmp["categories"] == ["new_cat", "reducer"], tmp)
+check("临时试剂不创建档案", call("GET", "/api/reagents")[1]
+      and not any(r["name"] == "新试剂X" for r in call("GET", "/api/reagents")[1]))
+check("导入结果安全确认均为待确认", imp_plan["safety_summary"]["confirmed_steps"] == 0
+      and imp_plan["safety_summary"]["all_confirmed"] is False
+      and all(x["safety_confirmed"] is False and x["safety_stale"] is False
+              for x in imp_plan["steps"]), imp_plan.get("safety_summary"))
+
+# 现有预检 / 正式推演门槛保留
+s, e = call("POST", f"/api/plans/{impid}/simulate?persist=true")
+check("导入方案未确认时正式推演 409", s == 409 and "安全确认" in e["detail"], (s, e))
+s, r = call("POST", f"/api/plans/{impid}/simulate?persist=false")
+check("导入方案预检不受限", s == 200 and r["status"] == "safe", (s, r.get("status")))
+confirm_all_steps(impid)
+s, r = call("POST", f"/api/plans/{impid}/simulate?persist=true")
+check("逐步确认后正式推演放行", s == 200 and r["safety"]["all_confirmed"] is True, s)
+
+# 各类非法输入整体拒绝：返回行号与原因，不产生半成品
+plans_before = len(call("GET", "/api/plans")[1])
+BAD_CASES = {
+    "序号重复": "步骤序号,试剂名,类别,时刻,用量,备注\n1,盐酸,strong_acid,0,20,\n1,氯化钠,halide_salt,5,10,",
+    "缺试剂名": "步骤序号,试剂名,类别,时刻,用量,备注\n1,,strong_acid,0,20,",
+    "缺类别": "步骤序号,试剂名,类别,时刻,用量,备注\n1,盐酸,,0,20,",
+    "时刻非法": "步骤序号,试剂名,类别,时刻,用量,备注\n1,盐酸,strong_acid,abc,20,",
+    "用量为负": "步骤序号,试剂名,类别,时刻,用量,备注\n1,盐酸,strong_acid,0,-5,",
+    "表头缺失": "a,b,c\n1,2,3",
+    "无数据行": "步骤序号,试剂名,类别,时刻,用量,备注\n",
+}
+for label, bad_csv in BAD_CASES.items():
+    s, e = call("POST", "/api/plans/import",
+                {"name": f"测试-导入-{label}", "csv_text": bad_csv,
+                 "allow_unknown_reagents": True})
+    d = e["detail"] if isinstance(e, dict) else {}
+    has_reason = bool(d.get("errors") or d.get("file_errors"))
+    check(f"{label} → 422 整体拒绝", s == 422 and has_reason, (s, e))
+check("整体拒绝不产生半成品", len(call("GET", "/api/plans")[1]) == plans_before)
+
+# 行号与原因可定位（表头为第 1 行，数据从第 2 行起）
+s, e = call("POST", "/api/plans/import",
+            {"name": "测试-导入-行号", "csv_text": BAD_CASES["序号重复"]})
+check("序号重复返回行号与原因", any(x["row"] == 3 and "重复" in x["reason"]
+      for x in e["detail"]["errors"]), e["detail"]["errors"])
+s, p = call("POST", "/api/plans/import/preview", {"csv_text": BAD_CASES["缺类别"]})
+check("预览同样返回行号与原因", p["ok"] is False
+      and any(x["row"] == 2 and "类别" in x["reason"] for x in p["errors"]), p["errors"])
+
+# 英文表头别名 + BOM + 引号包围的逗号类别
+CSV_EN = ("\ufefforder,reagent,categories,time,amount,note\n"
+          "1,盐酸,\"strong_acid, halide_salt\",0,20,quoted cats")
+s, p = call("POST", "/api/plans/import/preview", {"csv_text": CSV_EN})
+check("英文表头/BOM/引号类别可解析", s == 200 and p["ok"] is True
+      and p["rows"][0]["categories"] == ["strong_acid", "halide_salt"], p.get("file_errors"))
+
+call("DELETE", f"/api/plans/{impid}")
+
 print(f"\n结果：{PASS} 通过，{FAIL} 失败")
 sys.exit(1 if FAIL else 0)

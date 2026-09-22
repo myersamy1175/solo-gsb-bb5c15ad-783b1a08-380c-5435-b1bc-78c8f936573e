@@ -30,8 +30,16 @@ async function api(path, options = {}) {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    const msg = (data && (data.detail || data.message)) || `请求失败 (${res.status})`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    const detail = data && data.detail;
+    let msg;
+    if (typeof detail === "string") msg = detail;
+    else if (Array.isArray(detail)) msg = detail.map((d) => d.msg || JSON.stringify(d)).join("；");
+    else if (detail && typeof detail === "object") msg = detail.message || JSON.stringify(detail);
+    else msg = (data && data.message) || `请求失败 (${res.status})`;
+    const err = new Error(msg);
+    // 结构化错误（如方案导入的行号与原因）挂在 err.detail 上供调用方渲染
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) err.detail = detail;
+    throw err;
   }
   return data;
 }
@@ -551,6 +559,187 @@ function openPlanVersions(plan) {
   $("#rvPlanSelect").value = String(plan.id);
   renderRvEffective();
   openRvManager();
+}
+
+/* ---------------- 方案导入（CSV） ---------------- */
+
+const imp = { preview: null };  // 最近一次预览校验结果
+
+const IMPORT_TEMPLATE = [
+  "步骤序号,试剂名,类别,时刻,用量,备注",
+  "1,盐酸,strong_acid,0,20,缓慢滴加",
+  "2,氢氧化钠溶液,strong_base,10,25,中和",
+  "3,新配制缓冲液,buffer; weak_acid_salt,20,50,未建档试剂示例（确认后作为临时试剂导入）",
+].join("\n");
+
+$("#btnImpTemplate").addEventListener("click", () => {
+  // 带 BOM 的 UTF-8，便于 Excel 直接打开不乱码
+  const blob = new Blob(["\uFEFF" + IMPORT_TEMPLATE], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "plan-import-template.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$("#impFile").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";  // 允许重复选择同一文件
+  if (!file) return;
+  if (!$("#impName").value.trim()) {
+    $("#impName").value = file.name.replace(/\.[^.]+$/, "");
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    $("#impText").value = String(reader.result || "");
+    runImportPreview();
+  };
+  reader.onerror = () => toast("文件读取失败", true);
+  reader.readAsText(file, "utf-8");
+});
+
+$("#btnImpPreview").addEventListener("click", () => runImportPreview());
+
+async function runImportPreview() {
+  const text = $("#impText").value;
+  if (!text.trim()) { toast("请先选择 CSV 文件或粘贴 CSV 内容", true); return; }
+  try {
+    const data = await api("/api/plans/import/preview", { method: "POST", body: { csv_text: text } });
+    imp.preview = data;
+    renderImportPreview(data);
+  } catch (err) { toast(err.message, true); }
+}
+
+function renderImportPreview(data) {
+  const host = $("#impResult");
+  const s = data.summary;
+  const fileErrs = (data.file_errors || []).map((e) => `<li>${escapeHtml(e)}</li>`).join("");
+  const rowErrs = (data.errors || []).map((e) => `<li>第 ${e.row} 行：${escapeHtml(e.reason)}</li>`).join("");
+
+  const rowsHtml = data.rows.map((r) => {
+    const status = r.errors.length
+      ? `<span class="badge badge-high">❌ ${r.errors.map(escapeHtml).join("；")}</span>`
+      : r.temporary
+        ? '<span class="badge badge-medium">🆕 临时试剂（需确认）</span>'
+        : `<span class="badge badge-ok">✅ 复用档案 #${r.reagent_id}</span>`;
+    const cats = (r.temporary ? r.categories : r.archive_categories || [])
+      .map((c) => `<span class="badge badge-low">${escapeHtml(catLabel(c))}</span>`).join(" ");
+    return `<tr class="${r.errors.length ? "imp-row-err" : ""}">
+      <td>${r.row}</td>
+      <td>${r.order_index ?? "—"}</td>
+      <td>${escapeHtml(r.reagent_name || "—")}</td>
+      <td>${cats || "—"}</td>
+      <td>${r.time_offset_min ?? "—"}</td>
+      <td>${r.amount_ml ?? "—"}</td>
+      <td>${escapeHtml(r.note || "")}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join("");
+
+  const unknownBox = s.unknown_reagents.length ? `
+    <div class="imp-unknown">
+      <b>🆕 ${s.unknown_reagents.length} 个未建档试剂：</b>
+      ${s.unknown_reagents.map((n) => `<span class="badge badge-medium">${escapeHtml(n)}</span>`).join(" ")}
+      <label class="switch imp-confirm">
+        <input type="checkbox" id="impAllowUnknown" />
+        已确认：将上述未建档试剂作为<b>临时试剂</b>写入步骤（不创建试剂档案）
+      </label>
+    </div>` : "";
+
+  host.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h2>解析预览与逐行校验</h2>
+        <span class="item-meta">${data.ok ? "✅ 校验通过，可以导入" : "❌ 存在问题，导入将被整体拒绝"}</span>
+      </div>
+      <p class="item-meta">
+        共 <b>${s.total_rows}</b> 行：有效 <b>${s.valid_rows}</b> / 错误 <b>${s.invalid_rows}</b>；
+        复用档案试剂 ${s.known_reagents.length ? s.known_reagents.map(escapeHtml).join("、") : "无"}；
+        临时试剂 ${s.unknown_reagents.length ? s.unknown_reagents.map(escapeHtml).join("、") : "无"}
+      </p>
+      ${fileErrs || rowErrs ? `<div class="imp-errors"><b>问题列表（导入将被整体拒绝，不会产生半成品）：</b><ul>${fileErrs}${rowErrs}</ul></div>` : ""}
+      ${data.rows.length ? `<div class="table-wrap"><table class="grid imp-table">
+        <thead><tr><th>行号</th><th>序号</th><th>试剂</th><th>类别</th><th>时刻(min)</th><th>用量</th><th>备注</th><th>解析结果</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table></div>` : ""}
+      ${unknownBox}
+    </div>`;
+
+  $("#impAllowUnknown")?.addEventListener("change", updateImpSubmit);
+  updateImpSubmit();
+}
+
+function updateImpSubmit() {
+  const p = imp.preview;
+  const btn = $("#btnImpSubmit");
+  if (!p || !p.ok) { btn.disabled = true; return; }
+  const needConfirm = p.summary.unknown_reagents.length > 0;
+  const confirmed = !needConfirm || $("#impAllowUnknown")?.checked;
+  btn.disabled = !confirmed;
+}
+
+$("#btnImpSubmit").addEventListener("click", async () => {
+  const p = imp.preview;
+  if (!p) return;
+  const name = $("#impName").value.trim();
+  if (!name) { toast("请填写方案名称", true); return; }
+  try {
+    const res = await api("/api/plans/import", {
+      method: "POST",
+      body: {
+        name,
+        description: $("#impDesc").value.trim() || null,
+        csv_text: $("#impText").value,
+        allow_unknown_reagents: p.summary.unknown_reagents.length > 0,
+      },
+    });
+    imp.preview = null;
+    $("#btnImpSubmit").disabled = true;
+    await loadPlans();
+    renderImportSuccess(res);
+    toast(`导入成功：${res.import_summary.total_steps} 个步骤，安全确认均为待确认`);
+  } catch (err) {
+    if (err.detail) renderImportServerErrors(err.detail);
+    toast(err.message, true);
+  }
+});
+
+function renderImportSuccess(res) {
+  const host = $("#impResult");
+  const plan = res.plan;
+  const s = res.import_summary;
+  host.innerHTML = `
+    <div class="card imp-success">
+      <div class="card-head"><h2>✅ 导入完成</h2></div>
+      <p>方案 <b>${escapeHtml(plan.name)}</b>（#${plan.id}）已在单个事务内创建，共 ${s.total_steps} 个步骤。</p>
+      <p class="item-meta">
+        复用档案试剂：${s.known_reagents.length ? s.known_reagents.map(escapeHtml).join("、") : "无"}<br>
+        临时试剂（未建档）：${s.temporary_reagents.length ? s.temporary_reagents.map(escapeHtml).join("、") : "无"}
+      </p>
+      <p class="item-meta">🛡️ 全部步骤安全确认均为「待确认」——正式推演（保存记录）前需在编辑器中逐步确认；预检不受限。</p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-primary" id="btnImpGoto">🛡️ 前往编辑并完成安全确认</button>
+      </div>
+    </div>`;
+  $("#btnImpGoto").addEventListener("click", () => {
+    $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === "plans"));
+    $$(".tab-panel").forEach((p2) => p2.classList.toggle("active", p2.id === "tab-plans"));
+    editPlan(plan);
+  });
+}
+
+// 提交时服务端重新校验：把行号与原因渲染到预览区（服务端同样整体拒绝，不落数据）
+function renderImportServerErrors(detail) {
+  const host = $("#impResult");
+  const items = [
+    ...(detail.file_errors || []).map((e) => `<li>${escapeHtml(e)}</li>`),
+    ...(detail.errors || []).map((e) => `<li>第 ${e.row} 行：${escapeHtml(e.reason)}</li>`),
+    ...(detail.unknown_reagents || []).map((n) => `<li>未建档试剂需确认后导入：${escapeHtml(n)}</li>`),
+  ].join("");
+  const div = document.createElement("div");
+  div.className = "card imp-errors";
+  div.innerHTML = `<b>服务器校验未通过（未写入任何数据）：</b><ul>${items}</ul>`;
+  host.prepend(div);
+  div.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 /* ---------------- 报告渲染 ---------------- */

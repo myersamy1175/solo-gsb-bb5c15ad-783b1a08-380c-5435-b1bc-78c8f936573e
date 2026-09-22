@@ -12,7 +12,7 @@
       <span class="logo">⚗️</span>
       <div>
         <h1>实验室配液相容性推演台</h1>
-        <p class="subtitle">试剂属性 · 时序加液 · 规则图逐步推演 · 危险溯源 · 方案保存 / JSON 导出</p>
+        <p class="subtitle">试剂属性 · 时序加液 · CSV 导入 · 规则图逐步推演 · 危险溯源 · 方案保存 / JSON 导出</p>
       </div>
     </div>
     <div class="rev" id="ruleRev" title="当前规则图版本">规则图版本 —</div>
@@ -20,6 +20,7 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="plans">📋 配液方案</button>
+    <button class="tab" data-tab="import">📥 方案导入</button>
     <button class="tab" data-tab="reagents">🧪 试剂档案</button>
     <button class="tab" data-tab="rules">🕸️ 规则图</button>
     <button class="tab" data-tab="runs">🗂️ 推演记录</button>
@@ -82,6 +83,45 @@
       </div>
 
       <div id="reportWrap" class="hidden"></div>
+    </section>
+
+    <!-- ========== 方案导入 ========== -->
+    <section id="tab-import" class="tab-panel">
+      <div class="card">
+        <div class="card-head">
+          <h2>📥 从 CSV 导入配液方案</h2>
+          <button class="btn btn-small" id="btnImpTemplate">⬇ 下载 CSV 模板</button>
+        </div>
+        <p class="hint">
+          上传 <b>UTF-8</b> 编码的 CSV（首行表头）：<code>步骤序号,试剂名,类别,时刻,用量,备注</code>。
+          多个类别用分号分隔（如 <code>strong_acid; oxidizer</code>）；时刻 / 用量 / 备注可留空。
+          已建档试剂按名称精确复用；未建档试剂经确认后作为<b>临时试剂</b>写入步骤（不创建档案）。
+          任何一行校验失败都会<b>整体拒绝</b>并给出行号与原因，不会产生半成品；
+          导入后所有步骤安全确认均为「待确认」，正式推演前仍需逐步确认（预检不受限）。
+        </p>
+        <div class="form">
+          <div class="form-row">
+            <label>方案名称
+              <input type="text" id="impName" maxlength="128" placeholder="例如：含氰废液破氰处理（导入）" />
+            </label>
+            <label>CSV 文件（UTF-8 编码）
+              <input type="file" id="impFile" accept=".csv,text/csv" />
+            </label>
+          </div>
+          <label>方案说明（可选）
+            <textarea id="impDesc" rows="2" placeholder="目的、总体积、安全注意事项等"></textarea>
+          </label>
+          <label>CSV 内容（选择文件后自动填入，也可直接粘贴编辑）
+            <textarea id="impText" rows="7" spellcheck="false"
+              placeholder="步骤序号,试剂名,类别,时刻,用量,备注&#10;1,盐酸,strong_acid,0,20,缓慢滴加"></textarea>
+          </label>
+          <div class="form-actions">
+            <button type="button" class="btn" id="btnImpPreview">🔍 解析并预览校验</button>
+            <button type="button" class="btn btn-primary" id="btnImpSubmit" disabled>⬆ 确认导入</button>
+          </div>
+        </div>
+      </div>
+      <div id="impResult"></div>
     </section>
 
     <!-- ========== 试剂 ========== -->
