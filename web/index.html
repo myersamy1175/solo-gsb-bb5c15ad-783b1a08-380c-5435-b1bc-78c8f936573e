@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>实验室配液相容性推演台</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⚗️</span>
+      <div>
+        <h1>实验室配液相容性推演台</h1>
+        <p class="subtitle">试剂属性 · 时序加液 · 规则图逐步推演 · 危险溯源 · 方案保存 / JSON 导出</p>
+      </div>
+    </div>
+    <div class="rev" id="ruleRev" title="当前规则图版本">规则图版本 —</div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="plans">📋 配液方案</button>
+    <button class="tab" data-tab="reagents">🧪 试剂档案</button>
+    <button class="tab" data-tab="rules">🕸️ 规则图</button>
+    <button class="tab" data-tab="runs">🗂️ 推演记录</button>
+  </nav>
+
+  <main>
+    <!-- ========== 方案 ========== -->
+    <section id="tab-plans" class="tab-panel active">
+      <div class="layout-two">
+        <div class="card">
+          <div class="card-head">
+            <h2 id="planFormTitle">新建配液方案</h2>
+            <button class="btn btn-ghost" id="btnPlanReset">清空表单</button>
+          </div>
+          <form id="planForm" class="form">
+            <input type="hidden" id="planId" />
+            <label>方案名称
+              <input type="text" id="planName" required maxlength="128" placeholder="例如：氰化物废液氧化破氰处理" />
+            </label>
+            <label>说明
+              <textarea id="planDesc" rows="2" placeholder="目的、总体积、安全注意事项等"></textarea>
+            </label>
+
+            <div class="card-head">
+              <h3>加液步骤（按时间排列）</h3>
+              <button type="button" class="btn btn-small" id="btnAddStep">＋ 添加步骤</button>
+            </div>
+            <div class="table-wrap">
+              <table class="grid" id="stepsTable">
+                <thead>
+                  <tr>
+                    <th style="width:42px">#</th>
+                    <th>试剂（可选档案或填临时试剂）</th>
+                    <th style="width:120px">时刻(min)</th>
+                    <th style="width:110px">用量(mL/g)</th>
+                    <th>备注</th>
+                    <th style="width:42px"></th>
+                  </tr>
+                </thead>
+                <tbody id="stepsBody"></tbody>
+              </table>
+            </div>
+            <div class="safety-progress" id="safetyProgress"></div>
+
+            <div class="form-actions">
+              <button type="button" class="btn" id="btnDryRun">▶ 预检（不保存）</button>
+              <button type="submit" class="btn btn-primary" id="btnSavePlan">💾 保存方案</button>
+              <button type="button" class="btn btn-primary hidden" id="btnSimulateSaved">⚡ 保存并推演</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>已保存方案</h2>
+            <input type="search" id="planSearch" class="search" placeholder="搜索方案…" />
+          </div>
+          <ul class="item-list" id="planList"></ul>
+        </div>
+      </div>
+
+      <div id="reportWrap" class="hidden"></div>
+    </section>
+
+    <!-- ========== 试剂 ========== -->
+    <section id="tab-reagents" class="tab-panel">
+      <div class="layout-two">
+        <div class="card">
+          <div class="card-head"><h2 id="reagentFormTitle">新建试剂档案</h2>
+            <button class="btn btn-ghost" id="btnReagentReset">清空</button>
+          </div>
+          <form id="reagentForm" class="form">
+            <input type="hidden" id="reagentId" />
+            <div class="form-row">
+              <label>名称<input type="text" id="rgName" required maxlength="128" /></label>
+              <label>CAS 号<input type="text" id="rgCas" placeholder="7647-01-0" /></label>
+            </div>
+            <div class="form-row">
+              <label>分子式<input type="text" id="rgFormula" placeholder="HCl" /></label>
+              <label>浓度/规格<input type="text" id="rgConc" placeholder="36%~38%" /></label>
+            </div>
+            <label>物态
+              <select id="rgState">
+                <option value="liquid">液体</option>
+                <option value="solid">固体</option>
+                <option value="gas">气体</option>
+              </select>
+            </label>
+            <label>相容性类别（决定规则图命中，可多选）
+              <div class="chips" id="rgCats"></div>
+              <input type="text" id="rgCatsCustom" placeholder="自定义类别，回车添加（英文 key，如 azide）" />
+            </label>
+            <label>备注<textarea id="rgNote" rows="2"></textarea></label>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">💾 保存试剂</button>
+            </div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>试剂档案库</h2>
+            <input type="search" id="reagentSearch" class="search" placeholder="名称 / CAS / 分子式…" />
+          </div>
+          <ul class="item-list" id="reagentList"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 规则图 ========== -->
+    <section id="tab-rules" class="tab-panel">
+      <div class="card">
+        <div class="card-head">
+          <h2>📦 方案规则版本</h2>
+          <span class="item-meta">同一方案的规则支持草稿 / 发布 / 停用，判定只读取当前生效版本</span>
+        </div>
+        <div class="rv-bar">
+          <label class="rv-bar-label">选择方案
+            <select id="rvPlanSelect"></select>
+          </label>
+          <span class="rv-effective" id="rvEffective"></span>
+          <button type="button" class="btn btn-small" id="btnRvManage">🧰 管理版本</button>
+          <button type="button" class="btn btn-small btn-primary" id="btnRvNewDraft">＋ 新建版本草稿</button>
+        </div>
+        <p class="hint">为方案创建规则版本时会克隆<b>当前生效版本</b>（首次则克隆全局限定规则图）作为草稿；
+          草稿可随意调整规则集合与严重级别依据并预览，<b>发布</b>后推演 / 导出等判定接口只读取该版本快照，
+          原生效版本自动转为「已替代」；<b>停用</b>后该版本不再参与判定，方案回落至全局限定规则图。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>相容性规则图</h2>
+          <div class="legend" id="graphLegend"></div>
+        </div>
+        <p class="hint">节点 = 试剂类别；边 = 相容性禁忌。边的颜色表示严重级别，虚线表示有向规则。点击节点或边可查看判定依据；拖拽节点可调整布局，滚轮缩放，空白处拖动平移。</p>
+        <div class="graph-canvas-wrap">
+          <svg id="graphSvg"></svg>
+        </div>
+      </div>
+
+      <div class="layout-two">
+        <div class="card">
+          <div class="card-head"><h2>规则列表</h2>
+            <label class="switch"><input type="checkbox" id="showInactive" /> 显示已停用</label>
+          </div>
+          <ul class="item-list" id="ruleList"></ul>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>追加自定义规则</h2></div>
+          <form id="ruleForm" class="form">
+            <p class="hint">自定义规则即时参与推演。建议编号以 C 开头。类别可复用现有类别，也可填写新的英文 key。</p>
+            <div class="form-row">
+              <label>编号<input type="text" id="rlId" required placeholder="C001" pattern="[A-Za-z0-9_-]+" /></label>
+              <label>级别
+                <select id="rlSeverity">
+                  <option value="high">严重（命中即中止）</option>
+                  <option value="medium" selected>警示（记录并继续）</option>
+                  <option value="low">提示</option>
+                </select>
+              </label>
+            </div>
+            <div class="form-row">
+              <label>类别 A<input type="text" id="rlSource" required placeholder="strong_acid" /></label>
+              <label>类别 B<input type="text" id="rlTarget" required placeholder="cyanide" /></label>
+            </div>
+            <label class="switch"><input type="checkbox" id="rlDirectional" /> 有向规则（仅 A→B 方向触发）</label>
+            <label>标题<input type="text" id="rlTitle" placeholder="酸与氰化物接触生成剧毒氰化氢" /></label>
+            <label>反应方程式<textarea id="rlReaction" rows="2"></textarea></label>
+            <label>判定依据 / 机理解释<textarea id="rlRationale" rows="3"></textarea></label>
+            <label>参考文献（每行一条）<textarea id="rlRefs" rows="2" placeholder="GB/T 27476-2011 …"></textarea></label>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">＋ 添加规则</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 推演记录 ========== -->
+    <section id="tab-runs" class="tab-panel">
+      <div class="card">
+        <div class="card-head">
+          <h2>版本差异比较</h2>
+          <button class="btn btn-small" id="btnDiffSwap" title="交换基准与对照">⇄ 交换</button>
+        </div>
+        <p class="hint">仅允许比较<b>同一方案</b>的两条历史推演记录：系统按步骤编号与规则 ID 对齐命中，识别新增、消失与严重级别变化，并汇总状态、首次危险及受影响/阻断步骤的差异。</p>
+        <div class="diff-picker">
+          <label>基准记录（旧）
+            <select id="diffBase"></select>
+          </label>
+          <span class="diff-arrow">→</span>
+          <label>对照记录（新）
+            <select id="diffTarget"></select>
+          </label>
+          <button class="btn btn-primary" id="btnRunDiff">🔍 比较版本差异</button>
+          <button class="btn hidden" id="btnExportDiff">⬇ 导出差异 JSON</button>
+        </div>
+      </div>
+      <div id="diffDetail"></div>
+
+      <div class="card">
+        <div class="card-head"><h2>历史推演记录</h2></div>
+        <ul class="item-list" id="runList"></ul>
+      </div>
+      <div id="runDetail"></div>
+    </section>
+  </main>
+
+  <!-- 规则/ finding 详情弹层 -->
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <div class="modal" id="modalBox"></div>
+  </div>
+
+  <footer class="foot">
+    <span>实验室配液相容性推演台 · 仅供教学与方案预检，实际操作须遵守单位 SOP 与危化品管理制度</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+services:
+  labmix:
+    build: .
+    image: labmix-compat:latest
+    container_name: labmix-compat
+    ports:
+      - "8000:8000"
+    volumes:
+      - labmix-data:/data
+    environment:
+      # SQLite 数据库与可现场编辑的 rules.yaml 均位于该目录
+      APP_DATA_DIR: /data
+      DATABASE_URL: sqlite:////data/labmix.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  labmix-data:

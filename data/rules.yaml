@@ -1,0 +1,255 @@
+# 实验室配液相容性规则图（声明式、可维护）
+#
+# 每条规则是规则图中的一条边：source 类别 -> target 类别
+#   directional: false（默认）表示无向相容禁忌，匹配时双向等价
+#   directional: true  表示有向规则，仅按 source -> target 方向判定
+#
+# severity:
+#   high   严重 —— 首次命中即中止推演（起火 / 爆炸 / 剧毒气体）
+#   medium 警示 —— 记录但继续推演（强放热、显著有害蒸气等）
+#   low    提示 —— 仅记录
+#
+# 修改本文件后重启服务即生效；在网页"规则图"页也可查看与追加自定义规则。
+meta:
+  revision: "2026.09"
+  name: 实验室配液相容性规则图
+  description: 以试剂类别为节点、相容性禁忌为边的可维护规则图
+
+categories:
+  strong_acid:        { label: 强酸 }
+  strong_base:        { label: 强碱 }
+  oxidizer:           { label: 强氧化剂 }
+  reducer:            { label: 强还原剂 }
+  flammable:          { label: 易燃物 }
+  cyanide:            { label: 氰化物 }
+  sulfide:            { label: 硫化物 }
+  phosphide:          { label: 磷化物 }
+  metal_active:       { label: 活泼金属 }
+  nitrate:            { label: 硝酸盐 }
+  nitrite:            { label: 亚硝酸盐 }
+  hypochlorite:       { label: 次氯酸盐 }
+  peroxide:           { label: 过氧化物 }
+  heavy_metal:        { label: 重金属盐 }
+  ammonium:           { label: 氨及铵盐 }
+  halide_salt:        { label: 卤化物盐 }
+  hydrazine:          { label: 肼类 }
+  weak_acid_salt:     { label: 弱酸盐 }
+  halogen:            { label: 卤素 }
+
+rules:
+  - id: R001
+    source: cyanide
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 酸与氰化物接触生成剧毒氰化氢
+    reaction: CN⁻ + H⁺ → HCN↑（剧毒气体）
+    rationale: 酸性条件下氰离子立即质子化为氰化氢，吸入极少量即可致死；氰化物废液严禁与酸混合，应在碱性条件下用次氯酸钠/过氧化氢氧化处理。
+    references:
+      - GB 17914-2013《易燃易爆性商品储存养护技术条件》（含氰化物分区储存要求）
+      - 《实验室危险化学品安全管理规范》(GB/T 27476-2011 系列)
+      - Merck Index, "Hydrocyanic Acid"
+
+  - id: R002
+    source: sulfide
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 酸与硫化物接触放出剧毒硫化氢
+    reaction: S²⁻ + 2H⁺ → H₂S↑（剧毒、易燃）
+    rationale: 硫化物酸化迅速产生硫化氢气体，高浓度下可电击式抑制呼吸中枢，且与空气混合可燃烧爆炸。
+    references:
+      - GB 30000.18-2013《化学品分类和标签规范 急性毒性》
+      - 《无机化学》（大连理工大学编，第六版），氧族元素章节
+
+  - id: R003
+    source: phosphide
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 磷化物遇酸放出剧毒自燃的磷化氢
+    reaction: P³⁻ + 3H⁺ → PH₃↑（剧毒、可自燃）
+    rationale: 磷化钙、磷化锌等遇酸（甚至受潮）即产生磷化氢，剧毒并可在空气中自燃，伴随剧毒的五氧化二磷烟雾。
+    references:
+      - GB 13690-2009《化学品分类和危险性公示 通则》
+      - 《无机化学》（武汉大学、吉林大学编），氮族元素章节
+
+  - id: R004
+    source: hypochlorite
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 次氯酸盐遇强酸释放剧毒氯气
+    reaction: ClO⁻ + Cl⁻ + 2H⁺ → Cl₂↑ + H₂O
+    rationale: 84 消毒液（次氯酸钠）与盐酸等强酸或含氯酸性洁厕剂混合时产生氯气，吸入造成严重呼吸道灼伤、肺水肿。
+    references:
+      - GB 15258-2009《化学品安全标签编写规定》
+      - 《无机化学》（大连理工大学编），卤素章节
+
+  - id: R005
+    source: oxidizer
+    target: reducer
+    directional: false
+    severity: high
+    title: 强氧化剂与强还原剂剧烈氧化还原反应
+    reaction: 强放热，可起火或爆炸
+    rationale: 高锰酸钾/重铬酸盐/过氧化物等与亚硫酸盐、肼、活泼金属等强还原剂直接混合，可发生剧烈氧化还原反应，强放热并引发燃烧、爆炸。
+    references:
+      - GB 15603-2022《危险化学品仓库储存通则》（禁忌物料混存条款）
+      - 《化学实验室安全管理》(ACA/CSHE 实验室安全丛书)
+
+  - id: R006
+    source: oxidizer
+    target: flammable
+    directional: false
+    severity: high
+    title: 强氧化剂与易燃物接触可自燃
+    reaction: 强放热 → 起火
+    rationale: 高锰酸钾、硝酸、过氧化氢等接触乙醇、乙醚、丙酮等易燃液体时会加速氧化并强放热，足以引燃，常为实验室火灾起因。
+    references:
+      - GB 15603-2022《危险化学品仓库储存通则》
+      - Prudent Practices in the Laboratory (NRC, National Academies Press), 第 6 章
+
+  - id: R007
+    source: peroxide
+    target: heavy_metal
+    directional: false
+    severity: high
+    title: 过氧化物与重金属盐生成震动敏感的爆炸性过氧化物
+    reaction: H₂O₂ + Mⁿ⁺ → 不稳定金属过氧化物（震动/摩擦可爆）
+    rationale: 过氧化氢（尤其浓溶液）与铁、铜、铬等重金属离子接触可形成不稳定过氧化物并催化剧烈分解；乙醚久置形成的过氧化物浓缩后亦对震动敏感。
+    references:
+      - Prudent Practices in the Laboratory (NRC), 第 6 章
+      - GB 15603-2022《危险化学品仓库储存通则》
+
+  - id: R008
+    source: metal_active
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 活泼金属遇酸快速放出易燃易爆氢气
+    reaction: M + nH⁺ → Mⁿ⁺ + n/2 H₂↑
+    rationale: 锌、镁等与盐酸/稀硫酸剧烈反应放出氢气，氢与空气混合达爆炸极限时遇火花即爆；钠、钾等遇酸更为暴烈。
+    references:
+      - GB 30000.7-2013《化学品分类和标签规范 易燃气体》
+      - 《无机化学》（大连理工大学编），氢与碱金属章节
+
+  - id: R009
+    source: nitrate
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 硝酸盐与强酸共存形成强氧化性酸并可能释出有毒烟雾
+    reaction: NO₃⁻ + H⁺ ⇌ HNO₃；受热可释 NO₂↑
+    rationale: 硝酸盐加强酸等于体系中生成硝酸，对有机物与金属的侵蚀性急剧上升；受热或与还原性物质共存时释出剧毒二氧化氮，属经典禁忌配伍（如硝酸钠/硝酸钾禁与酸混配）。
+    references:
+      - 《无机化学》（大连理工大学编），氮族元素章节
+      - GB 15603-2022《危险化学品仓库储存通则》
+
+  - id: R010
+    source: nitrite
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 亚硝酸盐遇酸分解并放出剧毒氮氧化物
+    reaction: 2NO₂⁻ + 2H⁺ → NO↑ + NO₂↑ + H₂O
+    rationale: 亚硝酸不稳定，酸化即歧化分解为一氧化氮与二氧化氮，NO₂ 剧毒并腐蚀呼吸道；同时亚硝酸盐自身为剧毒高毒化学品。
+    references:
+      - GB 30000.18-2013《化学品分类和标签规范 急性毒性》
+      - 《无机化学》（武汉大学、吉林大学编），氮族元素章节
+
+  - id: R011
+    source: hydrazine
+    target: strong_acid
+    directional: false
+    severity: high
+    title: 肼类与强酸剧烈反应，兼有高毒高反应风险
+    reaction: N₂H₄ + H⁺ → N₂H₅⁺（强放热）
+    rationale: 水合肼为强还原剂且属高毒、可疑致癌物，与浓酸、氧化剂接触可剧烈反应甚至爆燃；肼盐受热亦有分解爆炸风险。
+    references:
+      - Prudent Practices in the Laboratory (NRC), 第 6 章
+      - IARC Monographs Vol. 128, Hydrazine（致癌性评估）
+
+  - id: R012
+    source: hydrazine
+    target: oxidizer
+    directional: false
+    severity: high
+    title: 肼类与强氧化剂接触可自燃或爆炸
+    reaction: N₂H₄ + O（氧化剂）→ N₂ + H₂O（强放热）
+    rationale: 肼是火箭推进剂级别的还原剂，与过氧化氢、次氯酸盐、高锰酸盐等接触可自燃，生成大量气体与热量。
+    references:
+      - 《化学实验室安全管理》(ACA/CSHE 实验室安全丛书)
+      - Prudent Practices in the Laboratory (NRC), 第 6 章
+
+  - id: R013
+    source: halogen
+    target: reducer
+    directional: false
+    severity: high
+    title: 卤素与强还原剂剧烈反应
+    reaction: X₂ + 还原剂 → 2X⁻（强放热）
+    rationale: 液溴/溴水与亚硫酸盐、硫代硫酸盐等强还原剂直接混合可剧烈放热；与氨或肼接触更可生成爆炸性卤化氮类物质，严禁直接混配。
+    references:
+      - GB 15603-2022《危险化学品仓库储存通则》
+      - 《无机化学》（大连理工大学编），卤素章节
+
+  - id: R014
+    source: strong_acid
+    target: strong_base
+    directional: false
+    severity: medium
+    title: 强酸强碱中和强放热（暴沸喷溅风险）
+    reaction: H⁺ + OH⁻ → H₂O（约 57.3 kJ/mol）
+    rationale: 浓酸与浓碱中和高度放热，可造成液体暴沸喷溅；混配时应在搅拌、冷却下将一方缓慢加入另一方，切勿快速混合。
+    references:
+      - 《基础分析化学实验》（北京大学出版社），酸碱标准溶液配制
+      - Prudent Practices in the Laboratory (NRC), 第 5 章
+
+  - id: R015
+    source: ammonium
+    target: strong_base
+    directional: false
+    severity: medium
+    title: 铵盐遇强碱释放刺激性、有毒的氨气
+    reaction: NH₄⁺ + OH⁻ → NH₃↑ + H₂O
+    rationale: 铵盐与氢氧化钠/石灰等共混或遇碱会放出氨气，刺激黏膜与呼吸道；氨水与强碱混放亦加速氨逸出。
+    references:
+      - GB 30000.18-2013《化学品分类和标签规范 急性毒性》
+      - 《无机化学》（大连理工大学编），氮族元素章节
+
+  - id: R016
+    source: hypochlorite
+    target: ammonium
+    directional: false
+    severity: high
+    title: 次氯酸盐与氨/铵盐生成剧毒易爆氯胺
+    reaction: NH₃ + ClO⁻ → NH₂Cl（氯胺）→ NCl₃（三氯化氮，可爆）
+    rationale: 84 消毒液与含氨清洁剂、铵盐混合会先生成氯胺（强刺激、致肺水肿），进一步反应生成震动敏感、可爆炸的三氯化氮，是常见家用与实验室中毒事故原因。
+    references:
+      - GB 15258-2009《化学品安全标签编写规定》（含氯消毒剂禁与酸性/含氨产品混用警示）
+      - Prudent Practices in the Laboratory (NRC), 第 6 章
+
+  - id: R017
+    source: strong_acid
+    target: weak_acid_salt
+    directional: false
+    severity: medium
+    title: 强酸与弱酸盐混配置换出有害/刺激气体
+    reaction: A⁻ + H⁺ → HA↑（依盐种类而异）
+    rationale: 强酸可从亚硫酸盐、碳酸盐、乙酸盐等弱酸盐中置换出二氧化硫、二氧化碳（大量时引发容器超压）或乙酸蒸气；亚硫酸盐释 SO₂ 尤为常见。
+    references:
+      - 《无机化学》（大连理工大学编），非金属含氧酸盐章节
+      - GB 15603-2022《危险化学品仓库储存通则》
+
+  - id: R018
+    source: oxidizer
+    target: halide_salt
+    directional: false
+    severity: medium
+    title: 强氧化剂与卤化物盐在酸性条件下可释出卤素
+    reaction: 2X⁻ + [O] + 2H⁺ → X₂ + H₂O
+    rationale: 高锰酸盐、重铬酸盐、二氧化铅等在酸性条件下氧化氯离子/溴离子生成氯气/溴蒸气，造成有毒气体暴露并破坏配液。
+    references:
+      - 《无机化学实验》（高等教育出版社），卤素及其化合物实验
+      - GB 30000.18-2013《化学品分类和标签规范 急性毒性》
