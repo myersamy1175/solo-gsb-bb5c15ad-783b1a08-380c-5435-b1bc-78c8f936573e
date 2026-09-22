@@ -565,5 +565,101 @@ call("DELETE", f"/api/plans/{spid}")
 call("DELETE", f"/api/plans/{spx['id']}")
 call("DELETE", f"/api/reagents/{rid}")
 
+# ---------- 11. 方案 CSV 导入（预览校验 / 单事务 / 未知试剂确认 / 安全待确认） ----------
+print("【场景11】方案 CSV 导入")
+s, plans_before = call("GET", "/api/plans")
+n_plans_before = len(plans_before)
+s, reagents = call("GET", "/api/reagents")
+kcn = next(x for x in reagents if x["name"] == "氰化钾")
+hcl = next(x for x in reagents if x["name"] == "盐酸")
+
+csv_ok = "\n".join([
+    "步骤序号,试剂名,类别,时刻,用量,备注",
+    "1,氰化钾,cyanide,0,10,含氰废液",
+    "2,盐酸,strong_acid,5,20,酸化（危险）",
+    "3,神秘试剂X,mystery_cat,10,5,档案外试剂",
+])
+
+# 预览：合法 CSV 给出逐行状态、复用/临时标记与类别不一致提示
+s, pv = call("POST", "/api/plans/import/preview", {"csv_text": csv_ok})
+check("预览 200 且校验通过", s == 200 and pv["valid"] is True, (s, pv.get("errors")))
+check("预览识别未知试剂", pv["unknown_reagents"] == ["神秘试剂X"], pv["unknown_reagents"])
+check("预览按名称复用档案试剂",
+      {m["name"]: m["reagent_id"] for m in pv["matched_reagents"]}
+      == {"氰化钾": kcn["id"], "盐酸": hcl["id"]}, pv["matched_reagents"])
+check("CSV 类别与档案不一致给出提示", any("盐酸" in w["message"] for w in pv["warnings"]), pv["warnings"])
+check("预览步骤带行号与顺序", [st["row"] for st in pv["steps"]] == [2, 3, 4]
+      and [st["order_index"] for st in pv["steps"]] == [0, 1, 2], pv["steps"])
+check("预览不落库", len(call("GET", "/api/plans")[1]) == n_plans_before)
+
+# 未确认未知试剂 → 409
+s, e = call("POST", "/api/plans/import", {"name": "测试-CSV导入", "csv_text": csv_ok})
+check("未知试剂未确认 409", s == 409 and "神秘试剂X" in e["detail"]["message"], (s, e))
+check("409 同样不落库", len(call("GET", "/api/plans")[1]) == n_plans_before)
+
+# 确认后提交 → 201，单事务创建方案 + 步骤
+s, imp = call("POST", "/api/plans/import",
+              {"name": "测试-CSV导入", "description": "e2e", "csv_text": csv_ok,
+               "allow_unknown_reagents": True})
+check("导入成功 201", s == 201, (s, imp))
+imp_plan = imp["plan"]
+impid = imp_plan["id"]
+check("导入摘要（复用 2 / 临时 1）", imp["import"]["total_rows"] == 3
+      and len(imp["import"]["matched_reagents"]) == 2
+      and imp["import"]["temporary_reagents"] == ["神秘试剂X"], imp["import"])
+check("档案试剂按 ID 复用", imp_plan["steps"][0]["reagent_id"] == kcn["id"]
+      and imp_plan["steps"][1]["reagent_id"] == hcl["id"], imp_plan["steps"])
+check("未知试剂作为临时试剂写入步骤", imp_plan["steps"][2]["reagent_id"] is None
+      and imp_plan["steps"][2]["reagent_name"] == "神秘试剂X"
+      and imp_plan["steps"][2]["categories"] == ["mystery_cat"], imp_plan["steps"][2])
+check("导入结果安全确认均为待确认", imp_plan["safety_summary"]["total_steps"] == 3
+      and imp_plan["safety_summary"]["confirmed_steps"] == 0
+      and imp_plan["safety_summary"]["all_confirmed"] is False
+      and all(x["safety_confirmed"] is False for x in imp_plan["steps"]),
+      imp_plan["safety_summary"])
+
+# 未知试剂不创建档案
+s, all_reagents = call("GET", "/api/reagents")
+check("未知试剂未写入试剂档案", s == 200
+      and not any(x["name"] == "神秘试剂X" for x in all_reagents))
+
+# 门槛保持：正式推演 409，预检放行且按档案类别命中 R001
+s, e = call("POST", f"/api/plans/{impid}/simulate?persist=true")
+check("导入方案正式推演仍受安全门槛拦截", s == 409 and "安全确认" in e["detail"], (s, e))
+s, r = call("POST", f"/api/plans/{impid}/simulate?persist=false")
+check("预检放行且复用试剂按档案类别命中 R001", s == 200 and r["status"] == "danger"
+      and r["first_danger"]["rule_id"] == "R001", (s, r.get("status")))
+confirm_all_steps(impid)
+s, r = call("POST", f"/api/plans/{impid}/simulate?persist=true")
+check("逐步确认后正式推演放行", s == 200 and r["run_id"] is not None, s)
+
+# 各类非法内容整体拒绝（422 + 行号原因），且不产生半成品
+bad_csvs = {
+    "序号重复": "步骤序号,试剂名,类别\n1,水,water\n1,水,water",
+    "缺试剂名": "步骤序号,试剂名,类别\n1,,strong_acid",
+    "缺类别": "步骤序号,试剂名,类别\n1,盐酸,",
+    "用量非法": "步骤序号,试剂名,类别,用量\n1,盐酸,strong_acid,abc",
+    "时刻非法": "步骤序号,试剂名,类别,时刻\n1,盐酸,strong_acid,-1",
+    "序号非法": "步骤序号,试剂名,类别\n0.5,盐酸,strong_acid",
+    "缺表头列": "试剂名,类别\n盐酸,strong_acid",
+    "无数据行": "步骤序号,试剂名,类别",
+}
+for tag, bad_csv in bad_csvs.items():
+    s, e = call("POST", "/api/plans/import",
+                {"name": f"测试-不应创建-{tag}", "csv_text": bad_csv,
+                 "allow_unknown_reagents": True})
+    errs = e.get("detail", {}).get("errors", []) if isinstance(e, dict) else []
+    check(f"非法 CSV（{tag}）整体拒绝 422 且带行号",
+          s == 422 and errs and all(x.get("row") for x in errs), (s, e))
+check("整体拒绝后无半成品", len(call("GET", "/api/plans")[1]) == n_plans_before + 1)
+
+# 序号重复的错误同时指出全部相关行号
+s, e = call("POST", "/api/plans/import",
+            {"name": "x", "csv_text": bad_csvs["序号重复"]})
+rows = {x["row"] for x in e["detail"]["errors"]}
+check("序号重复标出全部相关行", rows == {2, 3}, e["detail"]["errors"])
+
+call("DELETE", f"/api/plans/{impid}")
+
 print(f"\n结果：{PASS} 通过，{FAIL} 失败")
 sys.exit(1 if FAIL else 0)

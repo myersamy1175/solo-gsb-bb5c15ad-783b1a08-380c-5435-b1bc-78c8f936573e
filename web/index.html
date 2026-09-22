@@ -12,7 +12,7 @@
       <span class="logo">⚗️</span>
       <div>
         <h1>实验室配液相容性推演台</h1>
-        <p class="subtitle">试剂属性 · 时序加液 · 规则图逐步推演 · 危险溯源 · 方案保存 / JSON 导出</p>
+        <p class="subtitle">试剂属性 · 时序加液 · 规则图逐步推演 · 危险溯源 · CSV 导入 · 方案保存 / JSON 导出</p>
       </div>
     </div>
     <div class="rev" id="ruleRev" title="当前规则图版本">规则图版本 —</div>
@@ -75,6 +75,7 @@
         <div class="card">
           <div class="card-head">
             <h2>已保存方案</h2>
+            <button type="button" class="btn btn-small" id="btnOpenImport" title="从 UTF-8 CSV 批量导入方案步骤">📥 导入 CSV</button>
             <input type="search" id="planSearch" class="search" placeholder="搜索方案…" />
           </div>
           <ul class="item-list" id="planList"></ul>

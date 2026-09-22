@@ -213,3 +213,21 @@ class RuleVersionCreate(BaseModel):
 class RuleVersionUpdate(BaseModel):
     note: Optional[str] = Field(default=None, max_length=2000)
     rules: Optional[list[VersionRuleIn]] = None
+
+
+# ---------- 方案 CSV 导入 ----------
+
+class ImportPreviewIn(BaseModel):
+    """导入预览：仅解析校验，不落库。"""
+
+    csv_text: str = Field(min_length=1, max_length=200_000)
+
+
+class PlanImportIn(BaseModel):
+    """导入提交：方案与全部步骤在单个事务内创建，任一校验失败整体拒绝。"""
+
+    name: str = Field(min_length=1, max_length=128)
+    description: Optional[str] = None
+    csv_text: str = Field(min_length=1, max_length=200_000)
+    # 存在档案外试剂时，必须显式确认（作为临时试剂写入步骤）后才允许提交
+    allow_unknown_reagents: bool = False

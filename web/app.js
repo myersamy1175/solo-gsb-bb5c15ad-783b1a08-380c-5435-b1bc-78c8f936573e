@@ -30,8 +30,14 @@ async function api(path, options = {}) {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    const msg = (data && (data.detail || data.message)) || `请求失败 (${res.status})`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    const detail = data && (data.detail || data.message);
+    const msg = typeof detail === "string"
+      ? detail
+      : (detail && detail.message) || `请求失败 (${res.status})`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -533,6 +539,202 @@ async function removePlan(plan) {
   await loadPlans();
   toast("方案已删除");
 }
+
+/* ---------------- 方案 CSV 导入 ---------------- */
+
+const CSV_TEMPLATE_HEADER = "步骤序号,试剂名,类别,时刻,用量,备注";
+const CSV_TEMPLATE = CSV_TEMPLATE_HEADER + "\n" +
+  "1,盐酸,strong_acid,0,20,滴加（示例行，请按实际修改）\n" +
+  "2,氢氧化钠溶液,strong_base,5,25,缓慢加入并搅拌\n" +
+  "3,新配显影液,\"custom_cat_a, custom_cat_b\",10,5,档案外试剂将作为临时试剂导入\n";
+
+const importState = { preview: null, unknownOk: false };
+
+function openImportModal() {
+  importState.preview = null;
+  importState.unknownOk = false;
+  openModal(`
+    <button class="btn btn-ghost modal-close">✕ 关闭</button>
+    <h3>📥 导入配液方案（UTF-8 CSV）</h3>
+    <p class="hint">首行为表头：<code>${CSV_TEMPLATE_HEADER}</code>（时刻 / 用量 / 备注列可省略）。
+      序号须为 ≥1 的整数且全文件唯一；试剂名与档案<b>按名称精确匹配</b>则复用档案试剂，
+      未命中的试剂经你确认后作为<b>临时试剂</b>写入步骤（不创建档案）；
+      类别可填多个，用逗号 / 顿号 / 分号分隔。</p>
+    <p class="hint">任一序号重复、缺少试剂名 / 类别或数值非法都会<b>整体拒绝</b>并给出行号与原因，
+      不会产生半成品。导入成功后全部步骤安全确认均为<b>待确认</b>：预检（dry-run）不受限，
+      正式推演（落盘）前仍需逐步完成安全确认。</p>
+    <div class="form">
+      <div class="form-row">
+        <label>方案名称<input type="text" id="impName" maxlength="128" placeholder="例如：废液中和处理-20260922" /></label>
+        <label>说明（可选）<input type="text" id="impDesc" placeholder="来源文件 / 用途" /></label>
+      </div>
+      <div class="import-filebar">
+        <input type="file" id="impFile" accept=".csv,text/csv" />
+        <button type="button" class="btn btn-small" id="btnImpTemplate">⬇ 下载模板</button>
+      </div>
+      <textarea id="impCsv" class="import-csv" rows="9" spellcheck="false"
+        placeholder="在此粘贴 CSV 内容，或从上方选择 UTF-8 编码的 .csv 文件"></textarea>
+    </div>
+    <div class="form-actions">
+      <button type="button" class="btn" id="btnImpPreview">🔍 预览校验</button>
+      <button type="button" class="btn btn-primary" id="btnImpCommit" disabled>✅ 确认导入</button>
+    </div>
+    <div id="impResult"></div>
+  `);
+  $("#modalBox").classList.add("modal-wide");
+
+  $("#impFile").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      $("#impCsv").value = String(reader.result || "");
+      if (!$("#impName").value.trim()) {
+        $("#impName").value = file.name.replace(/\.[^.]+$/, "");
+      }
+      importState.preview = null;
+      importState.unknownOk = false;
+      renderImportPreview();
+    };
+    reader.onerror = () => toast("文件读取失败，请确认文件为 UTF-8 编码", true);
+    reader.readAsText(file, "UTF-8");
+  });
+
+  $("#btnImpTemplate").addEventListener("click", () => {
+    // 带 BOM 便于 Excel 直接识别 UTF-8
+    const blob = new Blob(["\ufeff" + CSV_TEMPLATE], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "plan-import-template.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  $("#btnImpPreview").addEventListener("click", async () => {
+    const csvText = $("#impCsv").value;
+    if (!csvText.trim()) { toast("请先选择文件或粘贴 CSV 内容", true); return; }
+    try {
+      importState.preview = await api("/api/plans/import/preview", {
+        method: "POST", body: { csv_text: csvText },
+      });
+      importState.unknownOk = false;
+      renderImportPreview();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  $("#btnImpCommit").addEventListener("click", async () => {
+    const name = $("#impName").value.trim();
+    if (!name) { toast("请填写方案名称", true); return; }
+    const p = importState.preview;
+    if (!p || !p.valid) { toast("请先通过预览校验", true); return; }
+    try {
+      const res = await api("/api/plans/import", {
+        method: "POST",
+        body: {
+          name,
+          description: $("#impDesc").value.trim() || null,
+          csv_text: $("#impCsv").value,
+          allow_unknown_reagents: importState.unknownOk,
+        },
+      });
+      closeModal();
+      await loadPlans();
+      editPlan(res.plan);
+      const imp = res.import;
+      toast(`导入成功：${imp.total_rows} 步（复用档案 ${imp.matched_reagents.length} 种 · 临时试剂 ${imp.temporary_reagents.length} 种）；安全确认均为待确认`);
+    } catch (err) {
+      const detail = err.data && err.data.detail;
+      if ((err.status === 409 || err.status === 422) && detail) {
+        // 提交时档案或内容已变化：以后端最新校验结果刷新预览
+        toast(detail.message || err.message, true);
+        try {
+          importState.preview = await api("/api/plans/import/preview", {
+            method: "POST", body: { csv_text: $("#impCsv").value },
+          });
+          renderImportPreview();
+        } catch { /* 预览刷新失败时仅保留提示 */ }
+      } else {
+        toast(err.message, true);
+      }
+    }
+  });
+}
+
+function renderImportPreview() {
+  const box = $("#impResult");
+  const commitBtn = $("#btnImpCommit");
+  const p = importState.preview;
+  if (!box) return;
+  if (!p) { box.innerHTML = ""; if (commitBtn) commitBtn.disabled = true; return; }
+
+  const errRows = new Set(p.errors.map((e) => e.row));
+  let html = "";
+  if (p.errors.length) {
+    html += `<div class="import-msg import-msg-err"><b>❌ 校验未通过（${p.errors.length} 处），未创建任何数据：</b><ul>` +
+      p.errors.map((e) =>
+        `<li>第 ${e.row} 行${e.seq != null ? `（序号 ${e.seq}）` : ""} · ${escapeHtml(e.field)}：${escapeHtml(e.reason)}</li>`
+      ).join("") + "</ul></div>";
+  }
+  if (p.warnings.length) {
+    html += `<div class="import-msg import-msg-warn"><b>⚠️ 提示（不阻断导入）：</b><ul>` +
+      p.warnings.map((w) => `<li>第 ${w.row} 行：${escapeHtml(w.message)}</li>`).join("") +
+      "</ul></div>";
+  }
+  if (p.steps.length) {
+    html += `<div class="table-wrap"><table class="grid"><thead><tr>
+        <th>行</th><th>序号</th><th>试剂</th><th>类别</th><th>时刻</th><th>用量</th><th>备注</th><th>状态</th>
+      </tr></thead><tbody>` +
+      p.steps.map((s) => {
+        const bad = errRows.has(s.row);
+        const status = bad
+          ? '<span class="badge badge-high">✗ 错误</span>'
+          : s.matched
+            ? `<span class="badge badge-ok">✓ 复用档案 #${s.reagent_id}</span>`
+            : '<span class="badge badge-medium">⚠ 临时试剂</span>';
+        const cats = (s.matched ? (s.matched_categories || []) : s.categories)
+          .map((c) => escapeHtml(catLabel(c))).join("、");
+        return `<tr${bad ? ' class="import-row-err"' : ""}>
+          <td>${s.row}</td><td>${s.seq ?? "—"}</td>
+          <td>${escapeHtml(s.reagent_name)}</td><td>${cats}</td>
+          <td>${s.time_offset_min ?? "—"}</td><td>${s.amount_ml ?? "—"}</td>
+          <td>${escapeHtml(s.note || "")}</td><td>${status}</td></tr>`;
+      }).join("") + "</tbody></table></div>";
+  }
+  if (p.valid && p.unknown_reagents.length) {
+    html += `<div class="import-msg import-msg-warn">
+      <b>⚠️ ${p.unknown_reagents.length} 种试剂不在试剂档案中：</b>${p.unknown_reagents.map(escapeHtml).join("、")}
+      <label class="switch import-unknown-confirm">
+        <input type="checkbox" id="impUnknownOk" ${importState.unknownOk ? "checked" : ""} />
+        <span>确认将以上未知试剂作为<b>临时试剂</b>写入步骤（不创建试剂档案）</span>
+      </label></div>`;
+  }
+  if (p.valid) {
+    html += `<div class="import-msg import-msg-ok">✅ 校验通过：共 ${p.total_rows} 步
+      （复用档案 ${p.matched_reagents.length} 种 · 临时试剂 ${p.unknown_reagents.length} 种）。
+      导入后全部步骤安全确认均为「待确认」，正式推演前须逐步确认。</div>`;
+  }
+  box.innerHTML = html;
+
+  const unknownBox = $("#impUnknownOk");
+  if (unknownBox) {
+    unknownBox.addEventListener("change", (e) => {
+      importState.unknownOk = e.target.checked;
+      syncImportCommitBtn();
+    });
+  }
+  syncImportCommitBtn();
+}
+
+function syncImportCommitBtn() {
+  const p = importState.preview;
+  const btn = $("#btnImpCommit");
+  if (!btn) return;
+  btn.disabled = !p || !p.valid || (p.unknown_reagents.length > 0 && !importState.unknownOk);
+}
+
+$("#btnOpenImport").addEventListener("click", openImportModal);
 
 function actionBtn(text, cls, fn) {
   const b = document.createElement("button");
